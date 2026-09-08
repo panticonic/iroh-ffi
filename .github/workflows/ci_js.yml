@@ -105,9 +105,13 @@ jobs:
           - host: '["ubuntu-latest"]'
             target: armv7-unknown-linux-musleabihf
             setup: |
-              sudo apt-get update
-              sudo apt-get -y install binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf musl-tools musl-dev
-            build: yarn build --target armv7-unknown-linux-musleabihf --use-napi-cross
+              curl --fail --location --retry 3 https://musl.cc/arm-linux-musleabihf-cross.tgz | tar -xz -C "$HOME"
+            build: |-
+              export PATH="$HOME/arm-linux-musleabihf-cross/bin:$PATH"
+              export CC_armv7_unknown_linux_musleabihf=arm-linux-musleabihf-gcc
+              export CXX_armv7_unknown_linux_musleabihf=arm-linux-musleabihf-g++
+              export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=arm-linux-musleabihf-gcc
+              yarn build --target armv7-unknown-linux-musleabihf --use-napi-cross
           - host: '["ubuntu-latest"]'
             target: aarch64-linux-android
             build: yarn build --target aarch64-linux-android
@@ -117,19 +121,13 @@ jobs:
           - host: '["ubuntu-latest"]'
             target: aarch64-unknown-linux-musl
             setup: |
-              pip3 install ziglang
+              curl --fail --location --retry 3 https://musl.cc/aarch64-linux-musl-cross.tgz | tar -xz -C "$HOME"
             build: |-
-              set -e
-              mkdir -p "$HOME/zigshim"
-              printf '#!/bin/sh\nA=;for x in "$@";do case "$x" in --target=*) ;; *) A="$A $x";; esac;done;exec python3 -m ziglang cc -target aarch64-linux-musl $A\n' > "$HOME/zigshim/zcc"
-              printf '#!/bin/sh\nA=;for x in "$@";do case "$x" in --target=*) ;; *) A="$A $x";; esac;done;exec python3 -m ziglang c++ -target aarch64-linux-musl $A\n' > "$HOME/zigshim/zcxx"
-              chmod +x "$HOME/zigshim/zcc" "$HOME/zigshim/zcxx"
-              export CC_aarch64_unknown_linux_musl="$HOME/zigshim/zcc"
-              export CXX_aarch64_unknown_linux_musl="$HOME/zigshim/zcxx"
-              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$HOME/zigshim/zcc"
-              export TARGET_CC="$HOME/zigshim/zcc"
-              export TARGET_CXX="$HOME/zigshim/zcxx"
-              yarn build --target aarch64-unknown-linux-musl
+              export PATH="$HOME/aarch64-linux-musl-cross/bin:$PATH"
+              export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
+              export CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
+              yarn build --target aarch64-unknown-linux-musl --use-napi-cross
           - host: '["windows-latest"]'
             target: aarch64-pc-windows-msvc
             build: yarn build --target aarch64-pc-windows-msvc
