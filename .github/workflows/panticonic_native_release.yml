@@ -68,7 +68,9 @@ jobs:
 
   apple:
     name: Build Apple XCFramework
-    runs-on: macos-14
+    # netdev links Network.framework symbols introduced in the iOS 18 SDK.
+    # macOS 15 hosted runners provide Xcode 16 and that SDK.
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
