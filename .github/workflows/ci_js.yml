@@ -46,6 +46,9 @@ jobs:
           node-version: 24
       - name: Enable corepack (yarn)
         run: npm install -g corepack --force && corepack enable
+      - name: Omit unpublished platform packages during source validation
+        working-directory: ./iroh-js
+        run: npm pkg delete optionalDependencies
       - name: cargo make test-js
         run: cargo make test-js
 
@@ -173,7 +176,7 @@ jobs:
         run: yarn config set supportedArchitectures.cpu "ia32"
         shell: bash
       - name: Install dependencies
-        run: yarn install
+        run: npm pkg delete optionalDependencies && yarn install
       - name: Setup node x86
         uses: actions/setup-node@v6
         if: matrix.settings.target == 'i686-pc-windows-msvc'
@@ -233,7 +236,7 @@ jobs:
         run: npm install -g corepack --force && corepack enable
         shell: bash
       - name: Install dependencies
-        run: yarn install
+        run: npm pkg delete optionalDependencies && yarn install
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -268,7 +271,7 @@ jobs:
         run: npm install -g corepack --force && corepack enable
         shell: bash
       - name: Install dependencies
-        run: yarn install
+        run: npm pkg delete optionalDependencies && yarn install
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -310,6 +313,7 @@ jobs:
       - name: Install dependencies
         run: |
           yarn config set supportedArchitectures.libc "musl"
+          npm pkg delete optionalDependencies
           yarn install
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -357,6 +361,7 @@ jobs:
         run: |
           yarn config set supportedArchitectures.cpu "arm64"
           yarn config set supportedArchitectures.libc "glibc"
+          npm pkg delete optionalDependencies
           yarn install
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -409,6 +414,7 @@ jobs:
         run: |
           yarn config set supportedArchitectures.cpu "arm64"
           yarn config set supportedArchitectures.libc "musl"
+          npm pkg delete optionalDependencies
           yarn install
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -460,6 +466,7 @@ jobs:
       - name: Install dependencies
         run: |
           yarn config set supportedArchitectures.cpu "arm"
+          npm pkg delete optionalDependencies
           yarn install
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -504,7 +511,11 @@ jobs:
           cache: yarn
           cache-dependency-path: './iroh-js/yarn.lock'
       - name: Install dependencies
-        run: yarn install
+        # Platform packages are produced by this run and do not exist in the
+        # registry until the publish step below processes the downloaded
+        # artifacts. Keep the release manifest intact in git; omit those
+        # dependencies only while installing the build tooling.
+        run: npm pkg delete optionalDependencies && yarn install
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
