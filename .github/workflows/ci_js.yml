@@ -4,6 +4,9 @@ env:
   DEBUG: napi:*
   APP_NAME: iroh
   MACOSX_DEPLOYMENT_TARGET: '10.13'
+  # Validation removes the not-yet-published optional platform packages from
+  # its ephemeral package.json, so Yarn must update its ephemeral lock view.
+  YARN_ENABLE_IMMUTABLE_INSTALLS: 'false'
 
 permissions:
   contents: write
