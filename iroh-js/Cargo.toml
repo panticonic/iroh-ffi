@@ -22,6 +22,7 @@ iroh-services = { version = "1.0.0", default-features = false }
 iroh-tickets = "1.0.0"
 n0-future = "0.3"
 tokio = "1.25.0"
+tokio-util = { version = "0.7", features = ["rt"] }
 url = "2.4"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.17" }

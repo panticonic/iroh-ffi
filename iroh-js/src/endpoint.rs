@@ -4,6 +4,7 @@ use iroh::endpoint::{self, presets, presets::Preset as _};
 use napi::{bindgen_prelude::*, threadsafe_function::ThreadsafeFunction};
 use napi_derive::napi;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::{EndpointAddr, RelayMode, SecretKey, WatchHandle, path, watch};
 
@@ -842,11 +843,11 @@ impl BiStream {
 /// The outgoing half of a QUIC stream.
 #[derive(Clone)]
 #[napi]
-pub struct SendStream(Arc<Mutex<endpoint::SendStream>>);
+pub struct SendStream(Arc<Mutex<endpoint::SendStream>>, CancellationToken);
 
 impl SendStream {
     fn new(s: endpoint::SendStream) -> Self {
-        SendStream(Arc::new(Mutex::new(s)))
+        SendStream(Arc::new(Mutex::new(s)), CancellationToken::new())
     }
 }
 
@@ -854,18 +855,32 @@ impl SendStream {
 impl SendStream {
     #[napi]
     pub async fn write(&self, buf: Vec<u8>) -> Result<i64> {
-        let mut s = self.0.lock().await;
-        let n = s.write(&buf).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        Ok(n as i64)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(anyhow::anyhow!("stream locally reset").into()),
+            result = async {
+                let mut s = self.0.lock().await;
+                let n = s.write(&buf).await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                Ok(n as i64)
+
+            } => result,
+        }
     }
 
     #[napi]
     pub async fn write_all(&self, buf: Vec<u8>) -> Result<()> {
-        let mut s = self.0.lock().await;
-        s.write_all(&buf)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        Ok(())
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(anyhow::anyhow!("stream locally reset").into()),
+            result = async {
+                let mut s = self.0.lock().await;
+                s.write_all(&buf)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                Ok(())
+
+            } => result,
+        }
     }
 
     #[napi]
@@ -879,6 +894,11 @@ impl SendStream {
     pub async fn reset(&self, error_code: BigInt) -> Result<()> {
         let code =
             endpoint::VarInt::from_u64(error_code.get_u64().1).map_err(anyhow::Error::from)?;
+        // Cancel before waiting for ownership: the data operation may be
+        // blocked on peer traffic while holding the stream mutex. Cancellation
+        // drops that future and releases its guard; the QUIC control operation
+        // below still runs on this stream, leaving the connection alive.
+        self.1.cancel();
         let mut s = self.0.lock().await;
         s.reset(code).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         Ok(())
@@ -899,9 +919,15 @@ impl SendStream {
 
     #[napi]
     pub async fn stopped(&self) -> Result<Option<i64>> {
-        let s = self.0.lock().await;
-        let res = s.stopped().await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        Ok(res.map(|r| r.into_inner() as i64))
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(anyhow::anyhow!("stream locally reset").into()),
+            result = async {
+                let stopped = self.0.lock().await.stopped();
+                let res = stopped.await.map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                Ok(res.map(|r| r.into_inner() as i64))
+            } => result,
+        }
     }
 
     #[napi]
@@ -913,11 +939,11 @@ impl SendStream {
 /// The incoming half of a QUIC stream.
 #[derive(Clone)]
 #[napi]
-pub struct RecvStream(Arc<Mutex<endpoint::RecvStream>>);
+pub struct RecvStream(Arc<Mutex<endpoint::RecvStream>>, CancellationToken);
 
 impl RecvStream {
     fn new(s: endpoint::RecvStream) -> Self {
-        RecvStream(Arc::new(Mutex::new(s)))
+        RecvStream(Arc::new(Mutex::new(s)), CancellationToken::new())
     }
 }
 
@@ -925,35 +951,56 @@ impl RecvStream {
 impl RecvStream {
     #[napi]
     pub async fn read(&self, size_limit: u32) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; size_limit as usize];
-        let mut r = self.0.lock().await;
-        let res = r
-            .read(&mut buf)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let len = res.unwrap_or(0);
-        buf.truncate(len);
-        Ok(buf)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(anyhow::anyhow!("stream locally stopped").into()),
+            result = async {
+                let mut buf = vec![0u8; size_limit as usize];
+                let mut r = self.0.lock().await;
+                let res = r
+                    .read(&mut buf)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                let len = res.unwrap_or(0);
+                buf.truncate(len);
+                Ok(buf)
+
+            } => result,
+        }
     }
 
     #[napi]
     pub async fn read_exact(&self, size: u32) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; size as usize];
-        let mut r = self.0.lock().await;
-        r.read_exact(&mut buf)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        Ok(buf)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(anyhow::anyhow!("stream locally stopped").into()),
+            result = async {
+                let mut buf = vec![0u8; size as usize];
+                let mut r = self.0.lock().await;
+                r.read_exact(&mut buf)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                Ok(buf)
+
+            } => result,
+        }
     }
 
     #[napi]
     pub async fn read_to_end(&self, size_limit: u32) -> Result<Vec<u8>> {
-        let mut r = self.0.lock().await;
-        let res = r
-            .read_to_end(size_limit as usize)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        Ok(res)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(anyhow::anyhow!("stream locally stopped").into()),
+            result = async {
+                let mut r = self.0.lock().await;
+                let res = r
+                    .read_to_end(size_limit as usize)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                Ok(res)
+
+            } => result,
+        }
     }
 
     #[napi]
@@ -971,6 +1018,11 @@ impl RecvStream {
     pub async fn stop(&self, error_code: BigInt) -> Result<()> {
         let code =
             endpoint::VarInt::from_u64(error_code.get_u64().1).map_err(anyhow::Error::from)?;
+        // Cancel before waiting for ownership: the data operation may be
+        // blocked on peer traffic while holding the stream mutex. Cancellation
+        // drops that future and releases its guard; the QUIC control operation
+        // below still runs on this stream, leaving the connection alive.
+        self.1.cancel();
         let mut r = self.0.lock().await;
         r.stop(code).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         Ok(())
@@ -978,11 +1030,19 @@ impl RecvStream {
 
     #[napi]
     pub async fn received_reset(&self) -> Result<Option<i64>> {
-        let mut r = self.0.lock().await;
-        let code = r
-            .received_reset()
-            .await
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        Ok(code.map(|c| c.into_inner() as i64))
+        tokio::select! {
+            biased;
+            // Locally stopped receive streams have no future peer reset.
+            _ = self.1.cancelled() => Ok(None),
+            result = async {
+                let mut r = self.0.lock().await;
+                let code = r
+                    .received_reset()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+                Ok(code.map(|c| c.into_inner() as i64))
+
+            } => result,
+        }
     }
 }

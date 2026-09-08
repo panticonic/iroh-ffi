@@ -5,6 +5,7 @@ use iroh::{
     protocol::AcceptError,
 };
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     AddrChangeCallback, CallbackError, Connecting, EndpointAddr, EndpointId, HomeRelayCallback,
@@ -724,11 +725,11 @@ impl BiStream {
 
 /// The outgoing half of a QUIC stream.
 #[derive(Clone, uniffi::Object)]
-pub struct SendStream(Arc<Mutex<endpoint::SendStream>>);
+pub struct SendStream(Arc<Mutex<endpoint::SendStream>>, CancellationToken);
 
 impl SendStream {
     fn new(s: endpoint::SendStream) -> Self {
-        SendStream(Arc::new(Mutex::new(s)))
+        SendStream(Arc::new(Mutex::new(s)), CancellationToken::new())
     }
 }
 
@@ -737,17 +738,31 @@ impl SendStream {
     /// Write some bytes, returning the number actually written.
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn write(&self, buf: &[u8]) -> Result<u64, IrohError> {
-        let mut s = self.0.lock().await;
-        let written = s.write(buf).await?;
-        Ok(written as _)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(crate::IrohError::new(crate::error::IrohErrorKind::Closed, "stream locally reset", "stream locally reset")),
+            result = async {
+                let mut s = self.0.lock().await;
+                let written = s.write(buf).await?;
+                Ok(written as _)
+
+            } => result,
+        }
     }
 
     /// Write all bytes, looping as needed.
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn write_all(&self, buf: &[u8]) -> Result<(), IrohError> {
-        let mut s = self.0.lock().await;
-        s.write_all(buf).await?;
-        Ok(())
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(crate::IrohError::new(crate::error::IrohErrorKind::Closed, "stream locally reset", "stream locally reset")),
+            result = async {
+                let mut s = self.0.lock().await;
+                s.write_all(buf).await?;
+                Ok(())
+
+            } => result,
+        }
     }
 
     /// Signal that no more data will be sent on this stream.
@@ -762,6 +777,11 @@ impl SendStream {
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn reset(&self, error_code: u64) -> Result<(), IrohError> {
         let error_code = endpoint::VarInt::from_u64(error_code)?;
+        // Cancel before waiting for ownership: the data operation may be
+        // blocked on peer traffic while holding the stream mutex. Cancellation
+        // drops that future and releases its guard; the QUIC control operation
+        // below still runs on this stream, leaving the connection alive.
+        self.1.cancel();
         let mut s = self.0.lock().await;
         s.reset(error_code)?;
         Ok(())
@@ -783,9 +803,15 @@ impl SendStream {
 
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn stopped(&self) -> Result<Option<u64>, IrohError> {
-        let s = self.0.lock().await;
-        let res = s.stopped().await?;
-        Ok(res.map(|r| r.into_inner()))
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(crate::IrohError::new(crate::error::IrohErrorKind::Closed, "stream locally reset", "stream locally reset")),
+            result = async {
+                let stopped = self.0.lock().await.stopped();
+                let res = stopped.await?;
+                Ok(res.map(|r| r.into_inner()))
+            } => result,
+        }
     }
 
     #[uniffi::method(async_runtime = "tokio")]
@@ -797,11 +823,11 @@ impl SendStream {
 
 /// The incoming half of a QUIC stream.
 #[derive(Clone, uniffi::Object)]
-pub struct RecvStream(Arc<Mutex<endpoint::RecvStream>>);
+pub struct RecvStream(Arc<Mutex<endpoint::RecvStream>>, CancellationToken);
 
 impl RecvStream {
     fn new(s: endpoint::RecvStream) -> Self {
-        RecvStream(Arc::new(Mutex::new(s)))
+        RecvStream(Arc::new(Mutex::new(s)), CancellationToken::new())
     }
 }
 
@@ -810,29 +836,50 @@ impl RecvStream {
     /// Read up to `size_limit` bytes into a fresh buffer.
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn read(&self, size_limit: u32) -> Result<Vec<u8>, IrohError> {
-        let mut buf = vec![0u8; size_limit as _];
-        let mut r = self.0.lock().await;
-        let res = r.read(&mut buf).await?;
-        let len = res.unwrap_or(0);
-        buf.truncate(len);
-        Ok(buf)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(crate::IrohError::new(crate::error::IrohErrorKind::Closed, "stream locally stopped", "stream locally stopped")),
+            result = async {
+                let mut buf = vec![0u8; size_limit as _];
+                let mut r = self.0.lock().await;
+                let res = r.read(&mut buf).await?;
+                let len = res.unwrap_or(0);
+                buf.truncate(len);
+                Ok(buf)
+
+            } => result,
+        }
     }
 
     /// Read exactly `size` bytes, erroring if the stream ends early.
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn read_exact(&self, size: u32) -> Result<Vec<u8>, IrohError> {
-        let mut buf = vec![0u8; size as _];
-        let mut r = self.0.lock().await;
-        r.read_exact(&mut buf).await?;
-        Ok(buf)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(crate::IrohError::new(crate::error::IrohErrorKind::Closed, "stream locally stopped", "stream locally stopped")),
+            result = async {
+                let mut buf = vec![0u8; size as _];
+                let mut r = self.0.lock().await;
+                r.read_exact(&mut buf).await?;
+                Ok(buf)
+
+            } => result,
+        }
     }
 
     /// Read until end-of-stream, with `size_limit` as a maximum.
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn read_to_end(&self, size_limit: u32) -> Result<Vec<u8>, IrohError> {
-        let mut r = self.0.lock().await;
-        let res = r.read_to_end(size_limit as _).await?;
-        Ok(res)
+        tokio::select! {
+            biased;
+            _ = self.1.cancelled() => Err(crate::IrohError::new(crate::error::IrohErrorKind::Closed, "stream locally stopped", "stream locally stopped")),
+            result = async {
+                let mut r = self.0.lock().await;
+                let res = r.read_to_end(size_limit as _).await?;
+                Ok(res)
+
+            } => result,
+        }
     }
 
     #[uniffi::method(async_runtime = "tokio")]
@@ -852,6 +899,11 @@ impl RecvStream {
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn stop(&self, error_code: u64) -> Result<(), IrohError> {
         let error_code = endpoint::VarInt::from_u64(error_code)?;
+        // Cancel before waiting for ownership: the data operation may be
+        // blocked on peer traffic while holding the stream mutex. Cancellation
+        // drops that future and releases its guard; the QUIC control operation
+        // below still runs on this stream, leaving the connection alive.
+        self.1.cancel();
         let mut r = self.0.lock().await;
         r.stop(error_code)?;
         Ok(())
@@ -859,9 +911,17 @@ impl RecvStream {
 
     #[uniffi::method(async_runtime = "tokio")]
     pub async fn received_reset(&self) -> Result<Option<u64>, IrohError> {
-        let mut r = self.0.lock().await;
-        let code = r.received_reset().await?;
-        Ok(code.map(|c| c.into_inner()))
+        tokio::select! {
+            biased;
+            // Locally stopped receive streams have no future peer reset.
+            _ = self.1.cancelled() => Ok(None),
+            result = async {
+                let mut r = self.0.lock().await;
+                let code = r.received_reset().await?;
+                Ok(code.map(|c| c.into_inner()))
+
+            } => result,
+        }
     }
 }
 
