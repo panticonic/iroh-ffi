@@ -107,7 +107,7 @@ jobs:
             setup: |
               curl --fail --location --retry 3 https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$HOME/.cargo/bin"
             build: |-
-              cross build --manifest-path Cargo.toml --release --target armv7-unknown-linux-musleabihf
+              RUSTFLAGS='-C target-feature=-crt-static' cross build --manifest-path Cargo.toml --release --target armv7-unknown-linux-musleabihf
               cp ../target/armv7-unknown-linux-musleabihf/release/libnumber0_iroh.so iroh.linux-arm-musleabihf.node
           - host: '["ubuntu-latest"]'
             target: aarch64-linux-android
@@ -120,7 +120,7 @@ jobs:
             setup: |
               curl --fail --location --retry 3 https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$HOME/.cargo/bin"
             build: |-
-              cross build --manifest-path Cargo.toml --release --target aarch64-unknown-linux-musl
+              RUSTFLAGS='-C target-feature=-crt-static' cross build --manifest-path Cargo.toml --release --target aarch64-unknown-linux-musl
               cp ../target/aarch64-unknown-linux-musl/release/libnumber0_iroh.so iroh.linux-arm64-musl.node
           - host: '["windows-latest"]'
             target: aarch64-pc-windows-msvc
